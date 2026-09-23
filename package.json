@@ -1,0 +1,16 @@
+{
+  "name": "reverfyx-steam-hours",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SSH Steam playtime client for Ubuntu",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "setup": "node src/cli.js setup",
+    "login": "node src/cli.js login",
+    "start": "node src/cli.js start",
+    "status": "node src/cli.js status",
+    "test": "node --test",
+    "check": "node --check src/cli.js && node --check src/core.js"
+  },
+  "dependencies": { "steam-user": "5.3.0" }
+}
