@@ -8,7 +8,7 @@ const {Writable} = require('node:stream');
 const {randomInt} = require('node:crypto');
 const {parseGames, writePrivate, readJSON, IdleController} = require('./core');
 const root = path.resolve(__dirname, '..');
-const {profilePaths, profiles, excludedFromFree} = require('./profiles');
+const {profilePaths, profiles, excludedFromFree, autoConfig, durationMs, expired} = require('./profiles');
 const profile = process.argv[3] || 'main';
 const paths = profilePaths(root, profile === 'all' ? 'main' : profile);
 const dataDir = paths.data;
@@ -62,7 +62,9 @@ process.on('exit', () => { if (ownsLock) fs.rmSync(lockDir, {recursive: true, fo
 
 async function run(loginOnly) {
   const config = readJSON(configFile);
-  const games = parseGames(config.games);
+  const automatic = config.autoFree === true && !excludedFromFree(profile, config) && profile !== 'main';
+  const games = automatic ? [] : parseGames(config.games);
+  if (!loginOnly && expired(config)) { console.log(`${profile}: таймер завершён.`); return; }
   if (typeof config.accountName !== 'string' || !config.accountName.trim()) throw new Error('Сначала npm run setup.');
   lock();
   const SteamUser = require('steam-user');
@@ -70,9 +72,9 @@ async function run(loginOnly) {
     dataDirectory: dataDir,
     autoRelogin: true,
     renewRefreshTokens: true,
-    enablePicsCache: false
+    enablePicsCache: automatic
   });
-  let lastState, timer, watchdog, quitting = false, tokenSaved = false, loggedIn = false;
+  let lastState, timer, watchdog, deadlineTimer, ownershipReady = false, lastRefresh = 0, overflowWarned = false, quitting = false, tokenSaved = false, loggedIn = false;
   const log = text => console.log(`[${profile} ${new Date().toLocaleTimeString('ru-RU')}] ${text}`);
   const notify = type => {if (process.connected) process.send({type});};
   const claim = require('./free-games').createClaimer(client, root, dataDir, log, () => notify('claim-limit'));
@@ -80,7 +82,7 @@ async function run(loginOnly) {
     if (message?.type === 'claim' && !quitting && loggedIn && !loginOnly) {
       try {
         const current = readJSON(configFile);
-        if (current.claimFree && !excludedFromFree(profile, current)) claim().catch(() => log('Не удалось прочитать каталог или прогресс лицензий.'));
+        if (!expired(current) && current.claimFree && !excludedFromFree(profile, current)) claim().catch(() => log('Не удалось прочитать каталог или прогресс лицензий.'));
       } catch {log('Ошибка настройки: получение лицензий пропущено.');}
     }
   });
@@ -88,18 +90,35 @@ async function run(loginOnly) {
     writePrivate(statusFile, {...status, pid: process.pid});
     if (status.state !== lastState) {
       lastState = status.state;
-      log({idling: `Отправлен статус игры: ${games.join(', ')}.`, paused: 'Пауза: ты играешь на другом устройстве.', disconnected: 'Нет соединения со Steam.'}[status.state]);
+      log({idling: `Отправлен статус игры: ${status.games.join(', ')}.`, waiting: 'Ожидание полученных бесплатных игр.', paused: 'Пауза: ты играешь на другом устройстве.', disconnected: 'Нет соединения со Steam.'}[status.state]);
     }
   });
   function finish(code) {
     if (quitting) return;
     quitting = true;
     clearInterval(timer);
+    clearInterval(deadlineTimer);
     clearTimeout(watchdog);
     controller.disconnect();
     try { if (client.steamID) { client.gamesPlayed([]); client.logOff(); } } catch {}
     setTimeout(() => process.exit(code), 300);
   }
+  function refreshGames() {
+    if (!automatic || !ownershipReady || !loggedIn || quitting || loginOnly) return;
+    const file = path.join(root,'data','free-catalog.json');
+    if (!fs.existsSync(file)) return;
+    const owned = new Set(client.getOwnedApps({excludeShared:true}));
+    const available = readJSON(file).apps.map(a=>a.appid).filter(id=>id !== 480 && owned.has(id));
+    if (available.length > 32 && !overflowWarned) {log(`Доступно ${available.length} игр. Одновременно выбраны первые 32; остальные не фармятся.`); overflowWarned = true;}
+    controller.setGames([...new Set(available)].slice(0,32));
+  }
+  client.on('ownershipCached', () => { ownershipReady = true; refreshGames(); });
+  if (!loginOnly) deadlineTimer = setInterval(() => {
+    try {
+      if (expired(readJSON(configFile))) {log('Таймер завершён. Получение игр и фарм остановлены.'); finish(0); return;}
+      if (Date.now()-lastRefresh >= 60000) {lastRefresh=Date.now(); refreshGames();}
+    } catch {log('Ошибка чтения настроек автоматического режима.'); finish(78);}
+  },1000);
   function loginDone() {
     if (loginOnly && loggedIn && tokenSaved) {
       log('Вход выполнен. Сессия сохранена локально; пароль не сохранён. Теперь можно включить службу.');
@@ -136,11 +155,12 @@ async function run(loginOnly) {
       return;
     }
     client.setPersona(SteamUser.EPersonaState.Online);
+    refreshGames();
     controller.connect(Boolean(client.playingState?.blocked));
     if (!timer) timer = setInterval(() => {
       const status = controller.snapshot();
       writePrivate(statusFile, {...status, pid: process.pid});
-      log(`Состояние: ${status.state}; локальная оценка за этот запуск: ${(status.estimatedSecondsPerGame / 3600).toFixed(2)} ч/игру. Это не проверенный счётчик Steam.`);
+      log(`Состояние: ${status.state}; локальная оценка текущей группы: ${(status.estimatedSecondsPerGame / 3600).toFixed(2)} ч/игру. Это не проверенный счётчик Steam.`);
     }, 60000);
   });
   client.on('playingState', blocked => { if (!quitting && !loginOnly) controller.playing(blocked); });
@@ -183,7 +203,17 @@ async function main() {
   if (cmd === 'accounts') {
     for (const id of profiles(root)) {
       const p = profilePaths(root,id); const c = readJSON(p.config);
-      console.log(`${id}: ${c.accountName}; игр ${c.games.length}; сессия ${fs.existsSync(path.join(p.data,'session.json')) ? 'есть' : 'нет'}; бесплатные ${excludedFromFree(id,c) ? 'исключён' : c.claimFree ? 'включены' : 'выключены'}`);
+      console.log(`${id}: ${c.accountName}; игр ${c.autoFree ? 'авто, до 32' : c.games.length}; сессия ${fs.existsSync(path.join(p.data,'session.json')) ? 'есть' : 'нет'}; бесплатные ${excludedFromFree(id,c) ? 'исключён' : c.claimFree ? 'включены' : 'выключены'}`);
+    }
+  } else if (cmd === 'auto' || cmd === 'timer') {
+    const ids = profile === 'all' ? profiles(root).filter(id=>id !== 'main') : [profile];
+    const stopAt = cmd === 'timer' ? Date.now() + durationMs(process.argv[4]) : null;
+    for (const id of ids) {
+      const file = profilePaths(root,id).config;
+      const c = readJSON(file);
+      if (cmd === 'auto' && (id === 'main' || excludedFromFree(id,c))) { console.log(`${id}: исключён.`); continue; }
+      writePrivate(file,cmd === 'auto' ? autoConfig(id,c) : {...c,stopAt});
+      console.log(cmd === 'auto' ? `${id}: автоматические лицензии и до 32 игр одновременно. Нужен перезапуск службы.` : `${id}: остановка ${new Date(stopAt).toISOString()}.`);
     }
   } else if (cmd === 'free-exclude') {
     if (profile === 'all') throw new Error('Укажи конкретный профиль для исключения.');
@@ -213,11 +243,12 @@ async function main() {
     const previous = fs.existsSync(configFile) ? readJSON(configFile) : {};
     const mainConfig = path.join(root,'config.json');
     const defaults = previous.games || (fs.existsSync(mainConfig) ? readJSON(mainConfig).games : [570]);
-    const games = parseGames((await ask(`AppID через запятую [Enter: ${defaults.join(',')}]: `)).trim() || defaults);
+    const automatic = profile !== 'main' && !excludedFromFree(profile,{...previous,accountName});
+    const games = automatic ? [] : parseGames((await ask(`AppID через запятую [Enter: ${defaults.join(',')}]: `)).trim() || defaults);
     for (const id of profiles(root)) {
       if (id !== profile && String(readJSON(profilePaths(root,id).config).accountName).toLowerCase() === accountName.toLowerCase()) throw new Error('Этот Steam-аккаунт уже есть в другом профиле.');
     }
-    writePrivate(configFile, {...previous, accountName, games});
+    writePrivate(configFile, automatic ? autoConfig(profile,{...previous,accountName,games}) : {...previous,accountName,games});
     console.log(`Сохранено. Дальше: npm run login -- ${profile}`);
   } else if (cmd === 'status') {
     if (!fs.existsSync(statusFile)) { console.log('Нет данных. Запусти npm start.'); return; }
@@ -225,6 +256,7 @@ async function main() {
     console.log(JSON.stringify(status, null, 2));
     console.log('Это последний локальный снимок, не подтверждение текущей работы и не счётчик Steam. Проверка службы: systemctl status steam-hours');
   } else if (cmd === 'start') require('./supervisor').supervise(root);
+  else if (cmd === 'catalog') await require('./free-games').buildCatalog(root);
   else if (cmd === 'worker' || cmd === 'login') await run(cmd === 'login');
   else throw new Error('Команды: setup [профиль], login [профиль], start, status [профиль], accounts, free [профиль|all], free-off [профиль|all].');
 }

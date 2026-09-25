@@ -37,6 +37,15 @@ class IdleController {
     this.since = null;
     this.elapsed = 0;
   }
+  setGames(games) {
+    if (JSON.stringify(games) === JSON.stringify(this.games)) return;
+    this.games = games;
+    this.elapsed = 0;
+    this.since = this.active ? this.now() : null;
+    if (this.active && games.length) this.client.gamesPlayed(games);
+    else if (this.active) this.client.gamesPlayed([]);
+    this.sync();
+  }
   connect(blocked = false) {
     this.online = true;
     this.blocked = blocked;
@@ -45,7 +54,7 @@ class IdleController {
   playing(blocked) { this.blocked = blocked; this.sync(); }
   disconnect() { this.online = false; this.sync(); }
   sync() {
-    const next = this.online && !this.blocked;
+    const next = this.online && !this.blocked && this.games.length > 0;
     if (next !== this.active) {
       if (this.active) this.elapsed += this.now() - this.since;
       this.active = next;
@@ -57,7 +66,7 @@ class IdleController {
   }
   snapshot() {
     return {
-      state: !this.online ? 'disconnected' : this.blocked ? 'paused' : 'idling',
+      state: !this.online ? 'disconnected' : this.blocked ? 'paused' : !this.games.length ? 'waiting' : 'idling',
       games: this.games,
       estimatedSecondsPerGame: Math.floor((this.elapsed + (this.active ? this.now() - this.since : 0)) / 1000),
       updatedAt: new Date(this.now()).toISOString()

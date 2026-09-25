@@ -44,6 +44,7 @@ test('Transient license failures are retryable; no false success',async t=>{
 });
 test('Supervisor launches independent workers, dispatches claims and stops children cleanly',async t=>{
  const root=temp(t);
+ writePrivate(path.join(root,'data/free-catalog.json'),{apps:[{appid:570}]});
  for(const [id,name] of [['main','Alice'],['second','Bob']]) {const p=profilePaths(root,id);writePrivate(p.config,{accountName:name,claimFree:true});writePrivate(path.join(p.data,'session.json'),{});}
  fs.mkdirSync(path.join(root,'src'));
  fs.writeFileSync(path.join(root,'src/cli.js'),`const fs=require('fs');const file=${JSON.stringify(path.join(root,'events'))};const id=process.argv[3];fs.appendFileSync(file,'start '+id+'\\n');process.send({type:'ready'});process.on('message',m=>{if(m.type==='claim')fs.appendFileSync(file,'claim '+id+'\\n')});process.on('SIGTERM',()=>{fs.appendFileSync(file,'stop '+id+'\\n');process.exit(0)});`);
@@ -64,4 +65,25 @@ test('ReVerfyx exclusion applies to login and alias regardless of case',()=>{
  assert.equal(excludedFromFree('main',{accountName:' reverfyx '}),true);
  assert.equal(excludedFromFree('second',{accountName:'Bob'}),false);
  assert.equal(excludedFromFree('main',{accountName:'different_login',freeExcluded:true}),true);
+});
+
+test('Automatic migration preserves main and exclusions; timer is bounded and persists absolute deadline',()=>{
+ const {autoConfig,durationMs,expired}=require('../src/profiles');
+ const main={accountName:'ReVerfyx',games:[570]};
+ assert.deepEqual(autoConfig('main',main),main);
+ assert.deepEqual(autoConfig('alias',main),main);
+ assert.deepEqual(autoConfig('acc1',{accountName:'test',games:[570]}),{accountName:'test',games:[],autoFree:true,claimFree:true});
+ assert.equal(durationMs('1h'),3600000); assert.equal(durationMs('100d'),8640000000);
+ for(const v of ['0h','101d','2401h','-1h','infinite']) assert.throws(()=>durationMs(v));
+ assert.equal(expired({stopAt:1000},999),false);assert.equal(expired({stopAt:1000},1000),true);
+ assert.equal(expired({},9999),false);
+});
+test('Automatic games wait for ownership, update while paused without claiming session, reset estimate',()=>{
+ const {IdleController}=require('../src/core');let now=0;const calls=[];
+ const c=new IdleController({gamesPlayed:g=>calls.push(g)},[],()=>{},()=>now);
+ c.connect();assert.equal(c.snapshot().state,'waiting');assert.equal(calls.length,0);
+ c.setGames([570]);assert.deepEqual(calls,[[570]]);
+ now=5000;c.playing(true);c.setGames([730]);assert.equal(calls.length,1);
+ c.playing(false);assert.deepEqual(calls[1],[730]);assert.equal(c.snapshot().estimatedSecondsPerGame,0);
+ c.setGames([]);assert.deepEqual(calls[2],[]);assert.equal(c.snapshot().state,'waiting');
 });

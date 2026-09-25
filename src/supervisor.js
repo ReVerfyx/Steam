@@ -3,12 +3,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const {fork} = require('node:child_process');
 const {readJSON, writePrivate} = require('./core');
-const {readyProfiles,profilePaths,excludedFromFree} = require('./profiles');
+const {readyProfiles,profilePaths,excludedFromFree,expired} = require('./profiles');
 function supervise(root, options = {}) {
   const launchDelay = options.launchDelay ?? 30000;
   const claimDelay = options.claimDelay ?? 90000;
   const tickDelay = options.tickDelay ?? 1000;
-  const ids = readyProfiles(root);
+  const ids = readyProfiles(root).filter(id => !expired(readJSON(profilePaths(root,id).config)));
   if (!ids.length) throw new Error('Нет профилей с сессией. Выполни npm run setup и npm run login.');
   const children = new Map(), pending = new Set();
   const globalFile = path.join(root,'data','free-global.json');
@@ -26,6 +26,7 @@ function supervise(root, options = {}) {
     throw new Error('Служба уже работает. Не запускай второй экземпляр.');
   }
   process.on('exit',()=> {try {fs.unlinkSync(managerLock);} catch {}});
+  let catalogChild = null, catalogRetry = 0;
   let stopping = false, launchAt = 0, round = 0;
   const launchQueue = [...ids];
   const log = s => console.log(`[manager] ${s}`);
@@ -33,6 +34,7 @@ function supervise(root, options = {}) {
     if (stopping) return;
     stopping = true;
     clearInterval(clock);
+    if (catalogChild) catalogChild.kill('SIGTERM');
     for (const child of children.values()) child.kill('SIGTERM');
     const forced = setTimeout(()=> {for(const child of children.values()) child.kill('SIGKILL'); process.exit(code);},5000);
     forced.unref();
@@ -66,9 +68,17 @@ function supervise(root, options = {}) {
       }
       const enabled = [...pending].filter(id => {
         const config = readJSON(profilePaths(root,id).config);
-        return config.claimFree === true && !excludedFromFree(id, config);
+        return !expired(config) && config.claimFree === true && !excludedFromFree(id, config);
       });
       if (!enabled.length) return;
+      const needsCatalog = enabled.some(id => readJSON(profilePaths(root,id).config).autoFree === true);
+      if (needsCatalog && !catalogChild && Date.now() >= catalogRetry) {
+        catalogRetry = Date.now()+3600000;
+        catalogChild = fork(path.join(root,'src','cli.js'),['catalog'],{stdio:['ignore','inherit','inherit','ipc']});
+        catalogChild.on('error',()=>log('Не удалось запустить обновление каталога.'));
+        catalogChild.on('exit',()=> {catalogChild=null;});
+      }
+      if (!fs.existsSync(path.join(root,'data','free-catalog.json'))) return;
       const state = fs.existsSync(globalFile) ? readJSON(globalFile) : {nextAt:0,paused:false};
       if (state.paused || Date.now() < state.nextAt) return;
       // One request every 90 seconds across ALL profiles, including after restart.

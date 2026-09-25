@@ -16,7 +16,9 @@
     "accounts": "node src/cli.js accounts",
     "free": "node src/cli.js free",
     "free-off": "node src/cli.js free-off",
-    "free-exclude": "node src/cli.js free-exclude"
+    "free-exclude": "node src/cli.js free-exclude",
+    "auto": "node src/cli.js auto",
+    "timer": "node src/cli.js timer"
   },
   "dependencies": {
     "steam-user": "5.3.0"

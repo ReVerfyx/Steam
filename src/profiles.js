@@ -31,4 +31,15 @@ function readyProfiles(root) {
 function excludedFromFree(id, config) {
   return config.freeExcluded === true || [id, config.accountName].some(value => String(value || '').trim().toLowerCase() === 'reverfyx');
 }
-module.exports = {profilePaths, profiles, readyProfiles, excludedFromFree};
+function autoConfig(id, config) {
+  if (id === 'main' || excludedFromFree(id, config)) return config;
+  return {...config, autoFree:true, claimFree:true, games:[]};
+}
+function durationMs(value) {
+  const match = /^(\d+)(h|d)$/.exec(value || '');
+  const ms = match ? Number(match[1]) * (match[2] === 'h' ? 3600000 : 86400000) : NaN;
+  if (!Number.isSafeInteger(ms) || ms < 3600000 || ms > 8640000000) throw new Error('Срок: от 1h до 100d (например 24h или 30d).');
+  return ms;
+}
+function expired(config, now = Date.now()) { return Number.isFinite(config.stopAt) && now >= config.stopAt; }
+module.exports = {profilePaths, profiles, readyProfiles, excludedFromFree, autoConfig, durationMs, expired};
