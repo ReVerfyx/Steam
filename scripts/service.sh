@@ -11,7 +11,7 @@ install)
   if [[ ! "$PROJECT_DIR" =~ ^/[a-zA-Z0-9_./-]+$ || ! "$NODE_BIN" =~ ^/[a-zA-Z0-9_./-]+$ ]]; then
     echo 'Перемести проект в путь без пробелов и специальных символов.'; exit 1
   fi
-  if [[ -d data/instance.lock ]]; then echo 'Сначала останови запущенную вручную программу (Ctrl+C).'; exit 1; fi
+  if [[ -d data/instance.lock ]]; then echo 'Уже есть запущенный экземпляр или оставшаяся блокировка. Сначала: sudo systemctl stop steam-hours; для ручного процесса — Ctrl+C.'; exit 1; fi
   "${SUDO[@]}" tee /etc/systemd/system/steam-hours.service >/dev/null <<UNIT
 [Unit]
 Description=ReVerfyx Steam Hours
