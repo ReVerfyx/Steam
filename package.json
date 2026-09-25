@@ -12,13 +12,14 @@
     "start": "node src/cli.js start",
     "status": "node src/cli.js status",
     "test": "node --test",
-    "check": "node --check src/cli.js && node --check src/core.js && node --check src/profiles.js && node --check src/supervisor.js && node --check src/free-games.js",
+    "check": "node --check src/cli.js && node --check src/core.js && node --check src/profiles.js && node --check src/supervisor.js && node --check src/free-games.js && node --check src/add.js",
     "accounts": "node src/cli.js accounts",
     "free": "node src/cli.js free",
     "free-off": "node src/cli.js free-off",
     "free-exclude": "node src/cli.js free-exclude",
     "auto": "node src/cli.js auto",
-    "timer": "node src/cli.js timer"
+    "timer": "node src/cli.js timer",
+    "add": "node src/add.js"
   },
   "dependencies": {
     "steam-user": "5.3.0"

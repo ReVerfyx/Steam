@@ -87,3 +87,14 @@ test('Automatic games wait for ownership, update while paused without claiming s
  c.playing(false);assert.deepEqual(calls[1],[730]);assert.equal(c.snapshot().estimatedSecondsPerGame,0);
  c.setGames([]);assert.deepEqual(calls[2],[]);assert.equal(c.snapshot().state,'waiting');
 });
+
+test('Batch addition validates bounds, resumes saved sessions and stops on first login failure',async t=>{
+ const {range,add}=require('../src/add');
+ assert.deepEqual(range('100000'),{n:100000,first:1});
+ for(const args of [['0'],['100001'],['2','100000'],['1.5'],['-1']]) assert.throws(()=>range(...args));
+ const root=temp(t), p=profilePaths(root,'acc1');
+ writePrivate(p.config,{accountName:'test'});writePrivate(path.join(p.data,'session.json'),{accountName:'test',refreshToken:'fake'});
+ const calls=[];
+ await assert.rejects(add(root,'4','1',async(cmd,id)=>{calls.push([cmd,id]);if(cmd==='login'&&id==='acc3')throw Error('limit');},async()=>{}),/limit/);
+ assert.deepEqual(calls,[['setup','acc2'],['login','acc2'],['setup','acc3'],['login','acc3']]);
+});
